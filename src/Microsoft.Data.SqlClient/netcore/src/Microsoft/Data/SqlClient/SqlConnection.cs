@@ -1476,7 +1476,7 @@ namespace Microsoft.Data.SqlClient
                         try
                         {
                             ForceNewConnection = true;
-                            await OpenAsync(ctoken).ConfigureAwait(false);
+                            await InternalOpenAsync(ctoken, SqlConnectionOverrides.None);
                             // On success, increment the reconnect count - we don't really care if it rolls over since it is approx.
                             _reconnectCount = unchecked(_reconnectCount + 1);
 #if DEBUG

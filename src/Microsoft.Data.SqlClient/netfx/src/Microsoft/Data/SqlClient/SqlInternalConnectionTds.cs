@@ -434,7 +434,7 @@ namespace Microsoft.Data.SqlClient
         // although the new password is generally not used it must be passed to the c'tor
         // the new Login7 packet will always write out the new password (or a length of zero and no bytes if not present)
         //
-        public static async Task<SqlInternalConnectionTds> Create(
+        public static async ValueTask<SqlInternalConnectionTds> Create(
                 DbConnectionPoolIdentity identity,
                 SqlConnectionString connectionOptions,
                 SqlCredential credential,
@@ -442,6 +442,8 @@ namespace Microsoft.Data.SqlClient
                 string newPassword,
                 SecureString newSecurePassword,
                 bool redirectedUserInstance,
+                CancellationToken cancellationToken,
+                bool async,
                 SqlConnectionString userConnectionOptions = null, // NOTE: userConnectionOptions may be different to connectionOptions if the connection string has been expanded (see SqlConnectionString.Expand)
                 SessionData reconnectSessionData = null,
                 ServerCertificateValidationCallback serverCallback = null,
@@ -556,7 +558,16 @@ namespace Microsoft.Data.SqlClient
                     {
                         try
                         {
-                            await instance.OpenLoginEnlist(instance._timeout, connectionOptions, credential, newPassword, newSecurePassword, redirectedUserInstance);
+                            await instance.OpenLoginEnlist(
+                                instance._timeout,
+                                connectionOptions,
+                                credential,
+                                newPassword,
+                                newSecurePassword,
+                                redirectedUserInstance,
+                                cancellationToken,
+                                async
+                            );
                             break;
                         }
                         catch (SqlException sqlex)
@@ -571,7 +582,7 @@ namespace Microsoft.Data.SqlClient
                             }
                             else
                             {
-                                await Task.Delay(transientRetryIntervalInMilliSeconds);
+                                await AsyncHelper.Wait(async, transientRetryIntervalInMilliSeconds, cancellationToken);
                             }
                         }
                     }
@@ -1530,7 +1541,14 @@ namespace Microsoft.Data.SqlClient
             _parser._physicalStateObj.SniContext = SniContext.Snix_Login;
         }
 
-        private async Task Login(ServerInfo server, TimeoutTimer timeout, string newPassword, SecureString newSecurePassword, SqlConnectionEncryptOption encrypt)
+        private async ValueTask Login(
+            ServerInfo server,
+            TimeoutTimer timeout,
+            string newPassword,
+            SecureString newSecurePassword,
+            SqlConnectionEncryptOption encrypt,
+            bool async
+        )
         {
             // create a new login record
             SqlLogin login = new SqlLogin();
@@ -1654,7 +1672,7 @@ namespace Microsoft.Data.SqlClient
             // The SQLDNSCaching feature is implicitly set
             requestedFeatures |= TdsEnums.FeatureExtension.SQLDNSCaching;
 
-            await _parser.TdsLogin(login, requestedFeatures, _recoverySessionData, _fedAuthFeatureExtensionData, _originalNetworkAddressInfo, encrypt);
+            await _parser.TdsLogin(login, requestedFeatures, _recoverySessionData, _fedAuthFeatureExtensionData, _originalNetworkAddressInfo, encrypt, async);
         }
 
         private void LoginFailure()
@@ -1673,8 +1691,16 @@ namespace Microsoft.Data.SqlClient
             // TODO: Need a performance counter for Failed Connections
         }
 
-        private async Task OpenLoginEnlist(TimeoutTimer timeout, SqlConnectionString connectionOptions, SqlCredential credential,
-                    string newPassword, SecureString newSecurePassword, bool redirectedUserInstance)
+        private async ValueTask OpenLoginEnlist(
+            TimeoutTimer timeout,
+            SqlConnectionString connectionOptions,
+            SqlCredential credential,
+            string newPassword,
+            SecureString newSecurePassword,
+            bool redirectedUserInstance,
+            CancellationToken cancellationToken,
+            bool async
+        )
         {
             bool useFailoverPartner; // should we use primary or secondary first
             ServerInfo dataSource = new ServerInfo(connectionOptions);
@@ -1712,13 +1738,15 @@ namespace Microsoft.Data.SqlClient
                                 redirectedUserInstance,
                                 connectionOptions,
                                 credential,
-                                timeout);
+                                timeout,
+                                cancellationToken,
+                                async);
                 }
                 else
                 {
                     timeoutErrorInternal.SetFailoverScenario(false); // not a failover scenario
                     await LoginNoFailover(dataSource, newPassword, newSecurePassword, redirectedUserInstance,
-                            connectionOptions, credential, timeout);
+                            connectionOptions, credential, timeout, cancellationToken, async);
                 }
 
                 if (!IsAzureSQLConnection)
@@ -1777,8 +1805,17 @@ namespace Microsoft.Data.SqlClient
         //  DEVNOTE: The logic in this method is paralleled by the logic in LoginWithFailover.
         //           Changes to either one should be examined to see if they need to be reflected in the other
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        private async Task LoginNoFailover(ServerInfo serverInfo, string newPassword, SecureString newSecurePassword, bool redirectedUserInstance,
-                    SqlConnectionString connectionOptions, SqlCredential credential, TimeoutTimer timeout)
+        private async ValueTask LoginNoFailover(
+            ServerInfo serverInfo,
+            string newPassword,
+            SecureString newSecurePassword,
+            bool redirectedUserInstance,
+            SqlConnectionString connectionOptions,
+            SqlCredential credential,
+            TimeoutTimer timeout,
+            CancellationToken cancellationToken,
+            bool async
+        )
         {
 
             Debug.Assert(object.ReferenceEquals(connectionOptions, this.ConnectionOptions), "ConnectionOptions argument and property must be the same"); // consider removing the argument
@@ -1879,6 +1916,7 @@ namespace Microsoft.Data.SqlClient
                                         newPassword,
                                         newSecurePassword,
                                         attemptOneLoginTimeout,
+                                        async,
                                         isFirstTransparentAttempt: isFirstTransparentAttempt,
                                         disableTnir: disableTnir);
 
@@ -1973,7 +2011,10 @@ namespace Microsoft.Data.SqlClient
                                 redirectedUserInstance,
                                 connectionOptions,
                                 credential,
-                                timeout);
+                                timeout,
+                                cancellationToken,
+                                async
+                            );
                     return; // LoginWithFailover successfully connected and handled entire connection setup
                 }
 
@@ -1981,7 +2022,7 @@ namespace Microsoft.Data.SqlClient
                 //  then update sleep interval for next iteration (max 1 second interval)
                 SqlClientEventSource.Log.TryAdvancedTraceEvent("<sc.SqlInternalConnectionTds.LoginNoFailover|ADV> {0}, sleeping {1}[milisec]", ObjectID, sleepInterval);
 
-                await Task.Delay(sleepInterval);
+                await AsyncHelper.Wait(async, sleepInterval, cancellationToken);
                 sleepInterval = (sleepInterval < 500) ? sleepInterval * 2 : 1000;
             }
             _activeDirectoryAuthTimeoutRetryHelper.State = ActiveDirectoryAuthenticationTimeoutRetryState.HasLoggedIn;
@@ -2053,7 +2094,7 @@ namespace Microsoft.Data.SqlClient
         //  DEVNOTE: The logic in this method is paralleled by the logic in LoginNoFailover.
         //           Changes to either one should be examined to see if they need to be reflected in the other
         // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        private async Task LoginWithFailover(
+        private async ValueTask LoginWithFailover(
                 bool useFailoverHost,
                 ServerInfo primaryServerInfo,
                 string failoverHost,
@@ -2062,7 +2103,9 @@ namespace Microsoft.Data.SqlClient
                 bool redirectedUserInstance,
                 SqlConnectionString connectionOptions,
                 SqlCredential credential,
-                TimeoutTimer timeout
+                TimeoutTimer timeout,
+                CancellationToken cancellationToken,
+                bool async
             )
         {
 
@@ -2155,6 +2198,7 @@ namespace Microsoft.Data.SqlClient
                             newPassword,
                             newSecurePassword,
                             intervalTimer,
+                            async,
                             withFailover: true
                             );
 
@@ -2192,6 +2236,7 @@ namespace Microsoft.Data.SqlClient
                                 newPassword,
                                 newSecurePassword,
                                 intervalTimer,
+                                async,
                                 withFailover: true
                                 );
                     }
@@ -2236,7 +2281,7 @@ namespace Microsoft.Data.SqlClient
                 if (1 == attemptNumber % 2)
                 {
                     SqlClientEventSource.Log.TryAdvancedTraceEvent("<sc.SqlInternalConnectionTds.LoginWithFailover|ADV> {0}, sleeping {1}[milisec]", ObjectID, sleepInterval);
-                    await Task.Delay(sleepInterval);
+                    await AsyncHelper.Wait(async, sleepInterval, cancellationToken);
                     sleepInterval = (sleepInterval < 500) ? sleepInterval * 2 : 1000;
                 }
 
@@ -2308,7 +2353,16 @@ namespace Microsoft.Data.SqlClient
         }
 
         // Common code path for making one attempt to establish a connection and log in to server.
-        private async Task AttemptOneLogin(ServerInfo serverInfo, string newPassword, SecureString newSecurePassword, TimeoutTimer timeout, bool withFailover = false, bool isFirstTransparentAttempt = true, bool disableTnir = false)
+        private async ValueTask AttemptOneLogin(
+            ServerInfo serverInfo,
+            string newPassword,
+            SecureString newSecurePassword,
+            TimeoutTimer timeout,
+            bool async,
+            bool withFailover = false,
+            bool isFirstTransparentAttempt = true,
+            bool disableTnir = false
+        )
         {
             SqlClientEventSource.Log.TryAdvancedTraceEvent("<sc.SqlInternalConnectionTds.AttemptOneLogin|ADV> {0}, timout={1}[msec], server={2}", ObjectID, timeout.MillisecondsRemaining, serverInfo.ExtendedServerName);
 
@@ -2331,7 +2385,7 @@ namespace Microsoft.Data.SqlClient
             timeoutErrorInternal.SetAndBeginPhase(SqlConnectionTimeoutErrorPhase.LoginBegin);
 
             _parser._physicalStateObj.SniContext = SniContext.Snix_Login;
-            await this.Login(serverInfo, timeout, newPassword, newSecurePassword, ConnectionOptions.Encrypt);
+            await this.Login(serverInfo, timeout, newPassword, newSecurePassword, ConnectionOptions.Encrypt, async);
 
             timeoutErrorInternal.EndPhase(SqlConnectionTimeoutErrorPhase.ProcessConnectionAuth);
             timeoutErrorInternal.SetAndBeginPhase(SqlConnectionTimeoutErrorPhase.PostLogin);
@@ -2692,7 +2746,7 @@ namespace Microsoft.Data.SqlClient
             if (dbConnectionPoolAuthenticationContext == null || attemptRefreshTokenUnLocked)
             {
                 // Get the Federated Authentication Token.
-                _fedAuthToken = GetFedAuthToken(fedAuthInfo).GetAwaiter().GetResult();
+                _fedAuthToken = GetFedAuthToken(fedAuthInfo, CancellationToken.None, false).Result;
                 Debug.Assert(_fedAuthToken != null, "_fedAuthToken should not be null.");
 
                 if (_dbConnectionPool != null)
@@ -2766,7 +2820,7 @@ namespace Microsoft.Data.SqlClient
                 if (authenticationContextLocked)
                 {
                     // Get the Federated Authentication Token.
-                    fedAuthToken = GetFedAuthToken(fedAuthInfo).GetAwaiter().GetResult();
+                    fedAuthToken = GetFedAuthToken(fedAuthInfo, CancellationToken.None, false).Result;
                     Debug.Assert(fedAuthToken != null, "fedAuthToken should not be null.");
                 }
             }
@@ -2786,8 +2840,14 @@ namespace Microsoft.Data.SqlClient
         /// Get the Federated Authentication Token.
         /// </summary>
         /// <param name="fedAuthInfo">Information obtained from server as Federated Authentication Info.</param>
+        /// <param name="cancellationToken">Cancellation token</param>
+        /// /// <param name="async">Wether the proces must be run async</param>
         /// <returns>SqlFedAuthToken</returns>
-        internal async Task<SqlFedAuthToken> GetFedAuthToken(SqlFedAuthInfo fedAuthInfo)
+        internal async ValueTask<SqlFedAuthToken> GetFedAuthToken(
+            SqlFedAuthInfo fedAuthInfo,
+            CancellationToken cancellationToken,
+            bool async
+        )
         {
 
             Debug.Assert(fedAuthInfo != null, "fedAuthInfo should not be null.");
@@ -2943,7 +3003,7 @@ namespace Microsoft.Data.SqlClient
                         // if there's enough time to retry before timeout, then retry, otherwise break out the retry loop.
                         if (sleepInterval < _timeout.MillisecondsRemaining)
                         {
-                            await Task.Delay(sleepInterval);
+                            await AsyncHelper.Wait(async, sleepInterval, cancellationToken);
                         }
                         else
                         {
@@ -2972,7 +3032,7 @@ namespace Microsoft.Data.SqlClient
                     SqlClientEventSource.Log.TryAdvancedTraceEvent("<sc.SqlInternalConnectionTds.GetFedAuthToken|ADV> {0}, sleeping {1}[Milliseconds]", ObjectID, sleepInterval);
                     SqlClientEventSource.Log.TryAdvancedTraceEvent("<sc.SqlInternalConnectionTds.GetFedAuthToken|ADV> {0}, remaining {1}[Milliseconds]", ObjectID, _timeout.MillisecondsRemaining);
 
-                    await Task.Delay(sleepInterval);
+                    await AsyncHelper.Wait(async, sleepInterval, cancellationToken);
                     sleepInterval *= 2;
                 }
                 // All other exceptions from MSAL/Azure Identity APIs
@@ -3293,9 +3353,15 @@ namespace Microsoft.Data.SqlClient
             }
         }
 
-        internal override Task<bool> TryReplaceConnection(DbConnection outerConnection, DbConnectionFactory connectionFactory, CancellationToken cancellationToken, DbConnectionOptions userOptions)
+        internal override ValueTask<bool> TryReplaceConnection(
+            DbConnection outerConnection,
+            DbConnectionFactory connectionFactory,
+            CancellationToken cancellationToken,
+            DbConnectionOptions userOptions,
+            bool async
+        )
         {
-            return base.TryOpenConnectionInternal(outerConnection, connectionFactory, cancellationToken, userOptions);
+            return base.TryOpenConnectionInternal(outerConnection, connectionFactory, cancellationToken, userOptions, async);
         }
     }
 

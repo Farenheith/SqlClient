@@ -1701,8 +1701,10 @@ namespace Microsoft.Data.SqlClient
             Open(SqlConnectionOverrides.None);
         }
 
-        private Task<bool> TryOpenWithRetry(CancellationToken cancellationToken, SqlConnectionOverrides overrides)
-            => RetryLogicProvider.ExecuteAsync(this, () => TryOpen(cancellationToken, overrides), cancellationToken);
+        private ValueTask<bool> TryOpenWithRetry(CancellationToken cancellationToken, SqlConnectionOverrides overrides, bool async)
+            => async
+                ? new ValueTask<bool>(RetryLogicProvider.ExecuteAsync(this, () => TryOpen(cancellationToken, overrides, true).AsTask(), cancellationToken))
+                : RetryLogicProvider.Execute(this, () => TryOpen(cancellationToken, overrides, false));
 
         /// <include file='../../../../../../../doc/snippets/Microsoft.Data.SqlClient/SqlConnection.xml' path='docs/members[@name="SqlConnection"]/OpenWithOverrides/*' />
         public void Open(SqlConnectionOverrides overrides)
@@ -1711,14 +1713,11 @@ namespace Microsoft.Data.SqlClient
             {
                 SqlClientEventSource.Log.TryCorrelationTraceEvent("<sc.SqlConnection.Open|API|Correlation> ObjectID {0}, ActivityID {1}", ObjectID, ActivityCorrelator.Current);
 
-                InternalOpenAsync(CancellationToken.None, overrides)
-                    .ConfigureAwait(false)
-                    .GetAwaiter()
-                    .GetResult();
+                _ = InternalOpenAsync(CancellationToken.None, overrides, false);
             }
         }
 
-        private async Task InternalOpenAsync(CancellationToken cancellationToken, SqlConnectionOverrides overrides)
+        private async ValueTask InternalOpenAsync(CancellationToken cancellationToken, SqlConnectionOverrides overrides, bool async)
         {
             if (StatisticsEnabled)
             {
@@ -1737,7 +1736,7 @@ namespace Microsoft.Data.SqlClient
             try
             {
                 statistics = SqlStatistics.StartTimer(Statistics);
-                if (!await (IsProviderRetriable ? TryOpenWithRetry(cancellationToken, overrides) : TryOpen(cancellationToken, overrides)))
+                if (!await (IsProviderRetriable ? TryOpenWithRetry(cancellationToken, overrides, async) : TryOpen(cancellationToken, overrides, async)))
                 {
                     throw ADP.InternalError(ADP.InternalErrorCode.SynchronousConnectReturnedPending);
                 }
@@ -1963,17 +1962,21 @@ namespace Microsoft.Data.SqlClient
         public override Task OpenAsync(CancellationToken cancellationToken)
         {
             SqlClientEventSource.Log.TryCorrelationTraceEvent("<sc.SqlConnection.Open|API|Correlation> ObjectID {0}, ActivityID {1}", ObjectID, ActivityCorrelator.Current);
-            return InternalOpenAsync(cancellationToken, SqlConnectionOverrides.None);
+            return OpenAsync(cancellationToken, SqlConnectionOverrides.None);
         }
 
         /// <include file='../../../../../../../doc/snippets/Microsoft.Data.SqlClient/SqlConnection.xml' path='docs/members[@name="SqlConnection"]/OpenAsyncWithOverrides/*' />
         public async Task OpenAsync(CancellationToken cancellationToken, SqlConnectionOverrides overrides)
         {
             SqlClientEventSource.Log.TryCorrelationTraceEvent("<sc.SqlConnection.Open|API|Correlation> ObjectID {0}, ActivityID {1}", ObjectID, ActivityCorrelator.Current);
-            await InternalOpenAsync(cancellationToken, overrides);
+            await InternalOpenAsync(cancellationToken, overrides, true);
         }
 
-        private async Task<bool> TryOpen(CancellationToken cancellationToken, SqlConnectionOverrides overrides = SqlConnectionOverrides.None)
+        private async ValueTask<bool> TryOpen(
+            CancellationToken cancellationToken,
+            SqlConnectionOverrides overrides,
+            bool async
+        )
         {
             SqlConnectionString connectionOptions = (SqlConnectionString)ConnectionOptions;
 
@@ -1997,13 +2000,13 @@ namespace Microsoft.Data.SqlClient
                 {
                     if (_impersonateIdentity.User == identity.User)
                     {
-                        result = await TryOpenInner(cancellationToken);
+                        result = await TryOpenInner(cancellationToken, async);
                     }
                     else
                     {
                         using (WindowsImpersonationContext context = _impersonateIdentity.Impersonate())
                         {
-                            result = await TryOpenInner(cancellationToken);
+                            result = await TryOpenInner(cancellationToken, async);
                         }
                     }
                 }
@@ -2018,7 +2021,7 @@ namespace Microsoft.Data.SqlClient
                 {
                     _lastIdentity = null;
                 }
-                result = await TryOpenInner(cancellationToken);
+                result = await TryOpenInner(cancellationToken, async);
             }
 
             // Set future transient fault handling based on connection options
@@ -2027,7 +2030,7 @@ namespace Microsoft.Data.SqlClient
             return result;
         }
 
-        private async Task<bool> TryOpenInner(CancellationToken cancellationToken)
+        private async ValueTask<bool> TryOpenInner(CancellationToken cancellationToken, bool async)
         {
             TdsParser bestEffortCleanupTarget = null;
             RuntimeHelpers.PrepareConstrainedRegions();
@@ -2045,14 +2048,14 @@ namespace Microsoft.Data.SqlClient
 #endif //DEBUG
                     if (ForceNewConnection)
                     {
-                        if (!await InnerConnection.TryReplaceConnection(this, ConnectionFactory, cancellationToken, UserConnectionOptions))
+                        if (!await InnerConnection.TryReplaceConnection(this, ConnectionFactory, cancellationToken, UserConnectionOptions, async))
                         {
                             return false;
                         }
                     }
                     else
                     {
-                        if (!await InnerConnection.TryOpenConnection(this, ConnectionFactory, cancellationToken, UserConnectionOptions))
+                        if (!await InnerConnection.TryOpenConnection(this, ConnectionFactory, cancellationToken, UserConnectionOptions, async))
                         {
                             return false;
                         }
@@ -2704,7 +2707,7 @@ namespace Microsoft.Data.SqlClient
             // Normally we would simply create a regular connectoin and open it but there is no other way to pass the
             // new password down to the constructor. Also it would have an unwanted impact on the connection pool
             //
-            using (SqlInternalConnectionTds con = SqlInternalConnectionTds.Create(null, connectionOptions, credential, null, newPassword, newSecurePassword, false, null, null, null, null).GetAwaiter().GetResult())
+            using (SqlInternalConnectionTds con = SqlInternalConnectionTds.Create(null, connectionOptions, credential, null, newPassword, newSecurePassword, false, CancellationToken.None, false, null, null, null, null).Result)
             {
                 if (!con.Is2005OrNewer)
                 {

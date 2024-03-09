@@ -3,12 +3,10 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.Collections.Specialized;
-using System.Configuration;
 using System.Data.Common;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.Versioning;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Data.Common;
 using Microsoft.Data.ProviderBase;
@@ -33,12 +31,29 @@ namespace Microsoft.Data.SqlClient
             }
         }
 
-        override protected Task<DbConnectionInternal> CreateConnection(DbConnectionOptions options, DbConnectionPoolKey poolKey, object poolGroupProviderInfo, DbConnectionPool pool, DbConnection owningConnection)
+        override protected ValueTask<DbConnectionInternal> CreateConnection(
+            DbConnectionOptions options,
+            DbConnectionPoolKey poolKey,
+            object poolGroupProviderInfo,
+            DbConnectionPool pool,
+            DbConnection owningConnection,
+            CancellationToken cancellationToken,
+            bool async
+        )
         {
-            return CreateConnection(options, poolKey, poolGroupProviderInfo, pool, owningConnection, userOptions: null);
+            return CreateConnection(options, poolKey, poolGroupProviderInfo, pool, owningConnection, userOptions: null, cancellationToken, async);
         }
 
-        override protected async Task<DbConnectionInternal> CreateConnection(DbConnectionOptions options, DbConnectionPoolKey poolKey, object poolGroupProviderInfo, DbConnectionPool pool, DbConnection owningConnection, DbConnectionOptions userOptions)
+        override protected async ValueTask<DbConnectionInternal> CreateConnection(
+            DbConnectionOptions options,
+            DbConnectionPoolKey poolKey,
+            object poolGroupProviderInfo,
+            DbConnectionPool pool,
+            DbConnection owningConnection,
+            DbConnectionOptions userOptions,
+            CancellationToken cancellationToken,
+            bool async
+        )
         {
             SqlConnectionString opt = (SqlConnectionString)options;
             SqlConnectionPoolKey key = (SqlConnectionPoolKey)poolKey;
@@ -106,7 +121,18 @@ namespace Microsoft.Data.SqlClient
                             //       This first connection is established to SqlExpress to get the instance name 
                             //       of the UserInstance.
                             SqlConnectionString sseopt = new SqlConnectionString(opt, opt.DataSource, true /* user instance=true */, false /* set Enlist = false */);
-                            sseConnection = await SqlInternalConnectionTds.Create(identity, sseopt, key.Credential, null, "", null, false, applyTransientFaultHandling: applyTransientFaultHandling);
+                            sseConnection = await SqlInternalConnectionTds.Create(
+                                identity,
+                                sseopt,
+                                key.Credential,
+                                null,
+                                "",
+                                null,
+                                false,
+                                cancellationToken,
+                                async,
+                                applyTransientFaultHandling: applyTransientFaultHandling
+                            );
                             // NOTE: Retrieve <UserInstanceName> here. This user instance name will be used below to connect to the Sql Express User Instance.
                             instanceName = sseConnection.InstanceName;
 
@@ -143,7 +169,7 @@ namespace Microsoft.Data.SqlClient
                     opt = new SqlConnectionString(opt, instanceName, false /* user instance=false */, null /* do not modify the Enlist value */);
                     poolGroupProviderInfo = null; // null so we do not pass to constructor below...
                 }
-                result = await SqlInternalConnectionTds.Create(identity, opt, key.Credential, poolGroupProviderInfo, "", null, redirectedUserInstance, userOpt, recoverySessionData, key.ServerCertificateValidationCallback, key.ClientCertificateRetrievalCallback, pool, key.AccessToken, key.OriginalNetworkAddressInfo, applyTransientFaultHandling: applyTransientFaultHandling, key.AccessTokenCallback);
+                result = await SqlInternalConnectionTds.Create(identity, opt, key.Credential, poolGroupProviderInfo, "", null, redirectedUserInstance, cancellationToken, async, userOpt, recoverySessionData, key.ServerCertificateValidationCallback, key.ClientCertificateRetrievalCallback, pool, key.AccessToken, key.OriginalNetworkAddressInfo, applyTransientFaultHandling: applyTransientFaultHandling, key.AccessTokenCallback);
             }
             return result;
         }

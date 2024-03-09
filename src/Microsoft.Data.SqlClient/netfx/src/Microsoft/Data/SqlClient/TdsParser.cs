@@ -2371,7 +2371,13 @@ namespace Microsoft.Data.SqlClient
             }
         }
 
-        internal bool Run(RunBehavior runBehavior, SqlCommand cmdHandler, SqlDataReader dataStream, BulkCopySimpleResultSet bulkCopyHandler, TdsParserStateObject stateObj)
+        internal bool Run(
+            RunBehavior runBehavior,
+            SqlCommand cmdHandler,
+            SqlDataReader dataStream,
+            BulkCopySimpleResultSet bulkCopyHandler,
+            TdsParserStateObject stateObj
+        )
         {
             bool syncOverAsync = stateObj._syncOverAsync;
             try
@@ -2429,7 +2435,14 @@ namespace Microsoft.Data.SqlClient
         }
 
         // Main parse loop for the top-level tds tokens, calls back into the I*Handler interfaces
-        internal bool TryRun(RunBehavior runBehavior, SqlCommand cmdHandler, SqlDataReader dataStream, BulkCopySimpleResultSet bulkCopyHandler, TdsParserStateObject stateObj, out bool dataReady)
+        internal bool TryRun(
+            RunBehavior runBehavior,
+            SqlCommand cmdHandler,
+            SqlDataReader dataStream,
+            BulkCopySimpleResultSet bulkCopyHandler,
+            TdsParserStateObject stateObj,
+            out bool dataReady
+        )
         {
             ReliabilitySection.Assert("unreliable call to Run");  // you need to setup for a thread abort somewhere before you call this method
             Debug.Assert((SniContext.Undefined != stateObj.SniContext) &&       // SniContext must not be Undefined
@@ -8904,13 +8917,15 @@ namespace Microsoft.Data.SqlClient
             return len;
         }
 
-        internal async Task TdsLogin(SqlLogin rec,
-                               TdsEnums.FeatureExtension requestedFeatures,
-                               SessionData recoverySessionData,
-                               FederatedAuthenticationFeatureExtensionData fedAuthFeatureExtensionData,
-                               SqlClientOriginalNetworkAddressInfo originalNetworkAddressInfo, 
-                               SqlConnectionEncryptOption encrypt)
-        {
+        internal async ValueTask TdsLogin(
+            SqlLogin rec,
+            TdsEnums.FeatureExtension requestedFeatures,
+            SessionData recoverySessionData,
+            FederatedAuthenticationFeatureExtensionData fedAuthFeatureExtensionData,
+            SqlClientOriginalNetworkAddressInfo originalNetworkAddressInfo, 
+            SqlConnectionEncryptOption encrypt,
+            bool async
+        ) {
             _physicalStateObj.SetTimeoutSeconds(rec.timeout);
 
             Debug.Assert(recoverySessionData == null || (requestedFeatures & TdsEnums.FeatureExtension.SessionRecovery) != 0, "Recovery session data without session recovery feature request");
@@ -9078,7 +9093,8 @@ namespace Microsoft.Data.SqlClient
                            outSSPIBuff,
                            outSSPILength);
 
-            await _physicalStateObj.WritePacket(TdsEnums.HARDFLUSH);
+            var writePacketTask = _physicalStateObj.WritePacket(TdsEnums.HARDFLUSH);
+            if (async) await writePacketTask;
             _physicalStateObj.ResetSecurePasswordsInformation();     // Password information is needed only from Login process; done with writing login packet and should clear information
             _physicalStateObj.HasPendingData = true;
             _physicalStateObj._messageStatus = 0;

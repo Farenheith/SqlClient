@@ -26,12 +26,7 @@ namespace Microsoft.Data.ProviderBase
         private const int PruningPeriod = 30 * 1000;           // thirty seconds
 
         private static int _objectTypeCount; // EventSource counter
-        internal readonly int _objectID = System.Threading.Interlocked.Increment(ref _objectTypeCount);
-
-        // s_pendingOpenNonPooled is an array of tasks used to throttle creation of non-pooled connections to
-        // a maximum of Environment.ProcessorCount at a time.
-        static Task<DbConnectionInternal>[] s_pendingOpenNonPooled = new Task<DbConnectionInternal>[Environment.ProcessorCount];
-        static Task<DbConnectionInternal> s_completedTask;
+        internal readonly int _objectID = Interlocked.Increment(ref _objectTypeCount);
 
         protected DbConnectionFactory() : this(DbConnectionPoolCountersNoCounters.SingletonInstance) { }
 
@@ -120,8 +115,13 @@ namespace Microsoft.Data.ProviderBase
             throw ADP.NotSupported();
         }
 
-        internal async Task<DbConnectionInternal> CreateNonPooledConnection(DbConnection owningConnection, DbConnectionPoolGroup poolGroup, DbConnectionOptions userOptions)
-        {
+        internal async Task<DbConnectionInternal> CreateNonPooledConnection(
+            DbConnection owningConnection,
+            DbConnectionPoolGroup poolGroup,
+            DbConnectionOptions userOptions,
+            CancellationToken cancellationToken,
+            bool async
+        ) {
             Debug.Assert(null != owningConnection, "null owningConnection?");
             Debug.Assert(null != poolGroup, "null poolGroup?");
 
@@ -129,7 +129,7 @@ namespace Microsoft.Data.ProviderBase
             DbConnectionPoolGroupProviderInfo poolGroupProviderInfo = poolGroup.ProviderInfo;
             DbConnectionPoolKey poolKey = poolGroup.PoolKey;
 
-            DbConnectionInternal newConnection = await CreateConnection(connectionOptions, poolKey, poolGroupProviderInfo, null, owningConnection, userOptions);
+            DbConnectionInternal newConnection = await CreateConnection(connectionOptions, poolKey, poolGroupProviderInfo, null, owningConnection, userOptions, cancellationToken, async);
             if (null != newConnection)
             {
                 PerformanceCounters.HardConnectsPerSecond.Increment();
@@ -139,12 +139,20 @@ namespace Microsoft.Data.ProviderBase
             return newConnection;
         }
 
-        internal async Task<DbConnectionInternal> CreatePooledConnection(DbConnectionPool pool, DbConnection owningObject, DbConnectionOptions options, DbConnectionPoolKey poolKey, DbConnectionOptions userOptions)
+        internal async ValueTask<DbConnectionInternal> CreatePooledConnection(
+            DbConnectionPool pool,
+            DbConnection owningObject,
+            DbConnectionOptions options,
+            DbConnectionPoolKey poolKey,
+            DbConnectionOptions userOptions,
+            CancellationToken cancellationToken,
+            bool async
+        )
         {
             Debug.Assert(null != pool, "null pool?");
             DbConnectionPoolGroupProviderInfo poolGroupProviderInfo = pool.PoolGroup.ProviderInfo;
 
-            DbConnectionInternal newConnection = await CreateConnection(options, poolKey, poolGroupProviderInfo, pool, owningObject, userOptions);
+            DbConnectionInternal newConnection = await CreateConnection(options, poolKey, poolGroupProviderInfo, pool, owningObject, userOptions, cancellationToken, async);
 
             if (null != newConnection)
             {
@@ -181,19 +189,13 @@ namespace Microsoft.Data.ProviderBase
             return null;
         }
 
-        // GetCompletedTask must be called from within s_pendingOpenPooled lock
-        static Task<DbConnectionInternal> GetCompletedTask()
-        {
-            if (s_completedTask == null)
-            {
-                TaskCompletionSource<DbConnectionInternal> source = new TaskCompletionSource<DbConnectionInternal>();
-                source.SetResult(null);
-                s_completedTask = source.Task;
-            }
-            return s_completedTask;
-        }
-
-        internal async Task<(bool, DbConnectionInternal)> TryGetConnection(DbConnection owningConnection, CancellationToken cancellationToken, DbConnectionOptions userOptions, DbConnectionInternal oldConnection)
+        internal async ValueTask<(bool, DbConnectionInternal)> TryGetConnection(
+            DbConnection owningConnection,
+            CancellationToken cancellationToken,
+            DbConnectionOptions userOptions,
+            DbConnectionInternal oldConnection,
+            bool async
+        )
         {
             DbConnectionInternal connection;
             Debug.Assert(null != owningConnection, "null owningConnection?");
@@ -225,7 +227,7 @@ namespace Microsoft.Data.ProviderBase
                     // this connection should not be pooled via DbConnectionPool
                     // or have a disabled pool entry.
                     poolGroup = GetConnectionPoolGroup(owningConnection); // previous entry have been disabled
-                    connection = await CreateNonPooledConnection(owningConnection, poolGroup, userOptions);
+                    connection = await CreateNonPooledConnection(owningConnection, poolGroup, userOptions, cancellationToken, async);
                     PerformanceCounters.NumberOfNonPooledConnections.Increment();
                 }
                 else
@@ -233,11 +235,11 @@ namespace Microsoft.Data.ProviderBase
                     if (((SqlClient.SqlConnection)owningConnection).ForceNewConnection)
                     {
                         Debug.Assert(!(oldConnection is DbConnectionClosed), "Force new connection, but there is no old connection");
-                        connection = await connectionPool.ReplaceConnection(owningConnection, userOptions, oldConnection);
+                        connection = await connectionPool.ReplaceConnection(owningConnection, userOptions, oldConnection, cancellationToken, async);
                     }
                     else
                     {
-                        connection = await connectionPool.TryGetConnection(owningConnection, userOptions);
+                        connection = await connectionPool.TryGetConnection(owningConnection, userOptions, cancellationToken, async);
                     }
 
                     if (connection == null)
@@ -255,7 +257,7 @@ namespace Microsoft.Data.ProviderBase
                             // We've hit the race condition, where the pool was shut down after we got it from the group.
                             // Yield time slice to allow shut down activities to complete and a new, running pool to be instantiated
                             //  before retrying.
-                            await Task.Delay(timeBetweenRetriesMilliseconds);
+                            await AsyncHelper.Wait(async, timeBetweenRetriesMilliseconds, cancellationToken);
                             if (cancellationToken.IsCancellationRequested) throw new OperationCanceledException();
                             timeBetweenRetriesMilliseconds *= 2; // double the wait time for next iteration
                         }
@@ -543,12 +545,12 @@ namespace Microsoft.Data.ProviderBase
             PerformanceCounters.NumberOfInactiveConnectionPoolGroups.Increment();
         }
 
-        virtual protected Task<DbConnectionInternal> CreateConnection(DbConnectionOptions options, DbConnectionPoolKey poolKey, object poolGroupProviderInfo, DbConnectionPool pool, DbConnection owningConnection, DbConnectionOptions userOptions)
+        virtual protected ValueTask<DbConnectionInternal> CreateConnection(DbConnectionOptions options, DbConnectionPoolKey poolKey, object poolGroupProviderInfo, DbConnectionPool pool, DbConnection owningConnection, DbConnectionOptions userOptions, CancellationToken cancellationToken, bool async)
         {
-            return CreateConnection(options, poolKey, poolGroupProviderInfo, pool, owningConnection);
+            return CreateConnection(options, poolKey, poolGroupProviderInfo, pool, owningConnection, cancellationToken, async);
         }
 
-        abstract protected Task<DbConnectionInternal> CreateConnection(DbConnectionOptions options, DbConnectionPoolKey poolKey, object poolGroupProviderInfo, DbConnectionPool pool, DbConnection owningConnection);
+        abstract protected ValueTask<DbConnectionInternal> CreateConnection(DbConnectionOptions options, DbConnectionPoolKey poolKey, object poolGroupProviderInfo, DbConnectionPool pool, DbConnection owningConnection, CancellationToken cancellationToken, bool async);
 
         abstract protected DbConnectionOptions CreateConnectionOptions(string connectionString, DbConnectionOptions previous);
 

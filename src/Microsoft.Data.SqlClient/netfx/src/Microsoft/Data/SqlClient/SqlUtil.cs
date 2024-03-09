@@ -366,6 +366,14 @@ namespace Microsoft.Data.SqlClient
                 });
             }
         }
+
+        internal static async ValueTask Wait(bool async, int sleepInterval, CancellationToken cancellationToken)
+        {
+            if (async)
+                await Task.Delay(sleepInterval, cancellationToken);
+            else
+                Thread.Sleep(sleepInterval);
+        }
     }
 
     sealed internal class InOutOfProcHelper

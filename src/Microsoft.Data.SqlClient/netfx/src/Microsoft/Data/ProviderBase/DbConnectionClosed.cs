@@ -67,9 +67,15 @@ namespace Microsoft.Data.ProviderBase
             throw ADP.ClosedConnectionError();
         }
 
-        internal override Task<bool> TryOpenConnection(DbConnection outerConnection, DbConnectionFactory connectionFactory, CancellationToken cancellationToken, DbConnectionOptions userOptions)
+        internal override ValueTask<bool> TryOpenConnection(
+            DbConnection outerConnection,
+            DbConnectionFactory connectionFactory,
+            CancellationToken cancellationToken,
+            DbConnectionOptions userOptions,
+            bool async
+        )
         {
-            return base.TryOpenConnectionInternal(outerConnection, connectionFactory, cancellationToken, userOptions);
+            return base.TryOpenConnectionInternal(outerConnection, connectionFactory, cancellationToken, userOptions, async);
         }
     }
 
@@ -116,9 +122,15 @@ namespace Microsoft.Data.ProviderBase
             connectionFactory.SetInnerConnectionTo(owningObject, DbConnectionClosedPreviouslyOpened.SingletonInstance);
         }
 
-        internal override Task<bool> TryReplaceConnection(DbConnection outerConnection, DbConnectionFactory connectionFactory, CancellationToken cancellationToken, DbConnectionOptions userOptions)
+        internal override ValueTask<bool> TryReplaceConnection(
+            DbConnection outerConnection,
+            DbConnectionFactory connectionFactory,
+            CancellationToken cancellationToken,
+            DbConnectionOptions userOptions,
+            bool async
+        )
         {
-            return TryOpenConnection(outerConnection, connectionFactory, cancellationToken, userOptions);
+            return TryOpenConnection(outerConnection, connectionFactory, cancellationToken, userOptions, async);
         }
     }
 
@@ -142,9 +154,15 @@ namespace Microsoft.Data.ProviderBase
         {
         }
 
-        internal override Task<bool> TryReplaceConnection(DbConnection outerConnection, DbConnectionFactory connectionFactory, CancellationToken cancellationToken, DbConnectionOptions userOptions)
+        internal override ValueTask<bool> TryReplaceConnection(
+            DbConnection outerConnection,
+            DbConnectionFactory connectionFactory,
+            CancellationToken cancellationToken,
+            DbConnectionOptions userOptions,
+            bool async
+        )
         {
-            return TryOpenConnection(outerConnection, connectionFactory, cancellationToken, userOptions);
+            return TryOpenConnection(outerConnection, connectionFactory, cancellationToken, userOptions, async);
         }
     }
 }
